@@ -1,22 +1,73 @@
 import { NextRequest } from "next/server";
 import * as cheerio from "cheerio";
-import { BASE_MAINNET, Paywall, type Receipt } from "@seedhape/x402-merchant-sdk";
+import { CdpClient } from "@coinbase/cdp-sdk";
+import { createCdpFacilitatorClient } from "@coinbase/cdp-sdk/x402";
+import { base, merchantConfig, Paywall, type Receipt } from "@seedhape/x402-merchant-sdk";
 import { createPaywall, evmPaywall } from "@x402/paywall";
 export const runtime = "nodejs";
 const receipts: Receipt[] = [];
-const facilitatorUrl = process.env.FACILITATOR_URL || BASE_MAINNET.facilitator.url;
-const paywall = process.env.MERCHANT_WALLET ? new Paywall({
-  ...BASE_MAINNET,
-  payTo: process.env.MERCHANT_WALLET,
-  facilitator: {
-    url: facilitatorUrl,
-    ...(process.env.FACILITATOR_API_KEY ? { apiKey: process.env.FACILITATOR_API_KEY } : {})
-  },
+const cdpCredentialsConfigured = Boolean(process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET);
+const cdpFacilitatorClient = cdpCredentialsConfigured ? createCdpFacilitatorClient({
+  apiKeyId: process.env.CDP_API_KEY_ID,
+  apiKeySecret: process.env.CDP_API_KEY_SECRET
+}) : undefined;
+const eip3009Facilitator = {
+  url: process.env.CDP_FACILITATOR_URL || "https://api.cdp.coinbase.com/platform/v2/x402",
+  ...(cdpFacilitatorClient ? { client: cdpFacilitatorClient } : {})
+};
+const erc7710Facilitator = {
+  url: process.env.ERC7710_FACILITATOR_URL || process.env.FACILITATOR_URL || base.facilitator.url
+};
+let paywallPromise: Promise<Paywall | null> | undefined;
+
+async function getPaywall() {
+  if (!paywallPromise) {
+    paywallPromise = (async () => {
+      let merchantWallet = process.env.MERCHANT_WALLET;
+      if (!merchantWallet && process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET && process.env.CDP_WALLET_SECRET) {
+        const cdp = new CdpClient({
+          apiKeyId: process.env.CDP_API_KEY_ID,
+          apiKeySecret: process.env.CDP_API_KEY_SECRET,
+          walletSecret: process.env.CDP_WALLET_SECRET
+        });
+        const account = await cdp.evm.getOrCreateAccount({ name: process.env.CDP_WALLET_NAME || "link-lens-merchant" });
+        merchantWallet = account.address;
+      }
+      if (!merchantWallet) return null;
+      return new Paywall(merchantConfig(base, {
+  payTo: merchantWallet,
+  facilitator: eip3009Facilitator,
   paymentMethods: ["eip3009", "erc7710"],
-  price: { amount: BigInt(10000), ...BASE_MAINNET },
+  facilitators: {
+    eip3009: eip3009Facilitator,
+    erc7710: erc7710Facilitator
+  },
+  price: { amount: 10000n, ...base },
   description: "Extract metadata and readable text from a public URL",
+  ...(process.env.MERCHANT_AP2_ISSUER && process.env.MERCHANT_AP2_PRIVATE_KEY_PEM ? {
+    ap2: {
+      issuer: process.env.MERCHANT_AP2_ISSUER,
+      privateKeyPem: process.env.MERCHANT_AP2_PRIVATE_KEY_PEM,
+      ...(process.env.MERCHANT_AP2_KEY_ID ? { keyId: process.env.MERCHANT_AP2_KEY_ID } : {})
+    }
+  } : {}),
+  route: {
+    name: "Link Lens URL Inspector",
+    description: "Extract metadata and readable text from a public URL.",
+    category: "url-intelligence",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string", format: "uri", description: "Public HTTP(S) URL" } },
+      required: ["url"]
+    },
+    outputSchema: { type: "object" }
+  },
   receipts: { record: async receipt => { receipts.push(receipt); } }
-}) : null;
+      }));
+    })();
+  }
+  return paywallPromise;
+}
 const browserPaywall = createPaywall().withNetwork(evmPaywall).withConfig({ appName: "Link Lens", testnet: false }).build();
 function safeUrl(value: string): URL | null {
   try { const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null; if (["localhost", "127.0.0.1", "::1"].includes(url.hostname) || url.hostname.endsWith(".local") || url.hostname.endsWith(".internal")) return null; return url; } catch { return null; }
@@ -34,24 +85,53 @@ async function fetchPublicPage(startUrl: URL) {
   throw new Error("Target exceeded the redirect limit.");
 }
 export async function GET(request: NextRequest) {
-  const target = request.nextUrl.searchParams.get("url"); const url = target ? safeUrl(target) : null;
+  const target = request.nextUrl.searchParams.get("url");
+  const url = target ? safeUrl(target) : null;
   if (!url) return Response.json({ error: "Only safe public HTTP(S) URLs are supported." }, { status: 400 });
+  const paywall = await getPaywall();
   if (!paywall) return Response.json({ error: "Payment service is not configured." }, { status: 503 });
-  if (paywall) {
-    const outcome = await paywall.handle({ path: "/api/inspect", method: "GET", query: request.nextUrl.searchParams, resource: request.url, paymentHeader: request.headers.get("payment-signature") ?? request.headers.get("x-payment") });
-    const paymentHeaders = outcome.paymentRequiredHeader ? { "PAYMENT-REQUIRED": outcome.paymentRequiredHeader } : undefined;
-    const wantsBrowserPaywall = request.headers.get("accept")?.includes("text/html");
-    if (outcome.kind === "challenge") {
-      if (wantsBrowserPaywall) return new Response(browserPaywall.generateHtml(outcome.challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
-      return Response.json(outcome.challenge, { status: 402, headers: paymentHeaders });
-    }
-    if (outcome.kind === "rejected") {
-      console.error("[x402] payment rejected:", outcome.reason);
-      if (wantsBrowserPaywall && outcome.challenge) return new Response(browserPaywall.generateHtml(outcome.challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: outcome.status ?? 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
-      return Response.json({ error: outcome.reason, ...(outcome.challenge as object ?? {}) }, { status: outcome.status ?? 402, headers: paymentHeaders });
-    }
+  const outcome = await paywall.handle({
+    path: "/api/inspect",
+    method: "GET",
+    query: request.nextUrl.searchParams,
+    resource: request.url,
+    paymentHeader: request.headers.get("payment-signature") ?? request.headers.get("x-payment")
+  });
+  const paymentHeaders = outcome.paymentRequiredHeader || outcome.ap2CheckoutJwt ? {
+    ...(outcome.paymentRequiredHeader ? { "PAYMENT-REQUIRED": outcome.paymentRequiredHeader } : {}),
+    ...(outcome.ap2CheckoutJwt ? { "AP2-CHECKOUT-JWT": outcome.ap2CheckoutJwt, "Access-Control-Expose-Headers": "PAYMENT-REQUIRED, AP2-CHECKOUT-JWT" } : {})
+  } : undefined;
+  const wantsBrowserPaywall = request.headers.get("accept")?.includes("text/html");
+  if (outcome.kind === "challenge") {
+    if (wantsBrowserPaywall) return new Response(browserPaywall.generateHtml(outcome.challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
+    return Response.json(outcome.challenge, { status: 402, headers: paymentHeaders });
   }
-  try { const fetched = await fetchPublicPage(url); const response = fetched.response; if (!response.ok) return Response.json({ error: "Target returned " + response.status + "." }, { status: 502 }); const html = (await response.text()).slice(0, 1000000); const $ = cheerio.load(html); $("script,style,noscript").remove(); return Response.json({ url: fetched.url.toString(), canonicalUrl: $("link[rel=canonical]").attr("href") ?? fetched.url.toString(), title: $("title").first().text().trim(), description: $("meta[name=description]").attr("content")?.trim() ?? "", contentType: response.headers.get("content-type"), text: $("body").text().replace(/\s+/g, " ").trim().slice(0, 20000), links: $("a[href]").toArray().slice(0, 100).map(element => $(element).attr("href")) }); } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Could not reach target URL." }, { status: 502 }); }
+  if (outcome.kind === "rejected") {
+    console.error("[x402] payment rejected:", outcome.reason);
+    if (wantsBrowserPaywall && outcome.challenge) return new Response(browserPaywall.generateHtml(outcome.challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: outcome.status ?? 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
+    return Response.json({ error: outcome.reason, ...(outcome.challenge as object ?? {}) }, { status: outcome.status ?? 402, headers: paymentHeaders });
+  }
+
+  const paymentResponseHeaders = outcome.settlementHeader ? { "PAYMENT-RESPONSE": outcome.settlementHeader } : undefined;
+  try {
+    const fetched = await fetchPublicPage(url);
+    const response = fetched.response;
+    if (!response.ok) return Response.json({ error: "Target returned " + response.status + "." }, { status: 502 });
+    const html = (await response.text()).slice(0, 1000000);
+    const $ = cheerio.load(html);
+    $("script,style,noscript").remove();
+    return Response.json({
+      url: fetched.url.toString(),
+      canonicalUrl: $("link[rel=canonical]").attr("href") ?? fetched.url.toString(),
+      title: $("title").first().text().trim(),
+      description: $("meta[name=description]").attr("content")?.trim() ?? "",
+      contentType: response.headers.get("content-type"),
+      text: $("body").text().replace(/\s+/g, " ").trim().slice(0, 20000),
+      links: $("a[href]").toArray().slice(0, 100).map(element => $(element).attr("href"))
+    }, { headers: paymentResponseHeaders });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "Could not reach target URL." }, { status: 502 });
+  }
 }
 
 export async function HEAD(request: NextRequest) {
