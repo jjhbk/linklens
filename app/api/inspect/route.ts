@@ -86,7 +86,7 @@ function enrichPaymentRequiredHeader(header?: string) {
   try {
     const challenge = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
     enrichBazaarChallenge(challenge);
-    return Buffer.from(JSON.stringify(challenge)).toString("base64url");
+    return Buffer.from(JSON.stringify(challenge)).toString("base64");
   } catch {
     return header;
   }
