@@ -72,6 +72,25 @@ const browserPaywall = createPaywall().withNetwork(evmPaywall).withConfig({ appN
 function safeUrl(value: string): URL | null {
   try { const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null; if (["localhost", "127.0.0.1", "::1"].includes(url.hostname) || url.hostname.endsWith(".local") || url.hostname.endsWith(".internal")) return null; return url; } catch { return null; }
 }
+function enrichBazaarChallenge(challenge: unknown) {
+  if (!challenge || typeof challenge !== "object") return challenge;
+  const value = challenge as { extensions?: { bazaar?: { info?: { input?: { queryParams?: Record<string, unknown> } } } } };
+  const bazaar = value.extensions?.bazaar;
+  if (bazaar?.info?.input) {
+    bazaar.info.input.queryParams = { url: "https://example.com" };
+  }
+  return challenge;
+}
+function enrichPaymentRequiredHeader(header?: string) {
+  if (!header) return header;
+  try {
+    const challenge = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
+    enrichBazaarChallenge(challenge);
+    return Buffer.from(JSON.stringify(challenge)).toString("base64url");
+  } catch {
+    return header;
+  }
+}
 async function fetchPublicPage(startUrl: URL) {
   let currentUrl = startUrl;
   for (let hop = 0; hop < 5; hop++) {
@@ -97,19 +116,20 @@ export async function GET(request: NextRequest) {
     resource: request.url,
     paymentHeader: request.headers.get("payment-signature") ?? request.headers.get("x-payment")
   });
+  const challenge = enrichBazaarChallenge(outcome.challenge);
   const paymentHeaders = outcome.paymentRequiredHeader || outcome.ap2CheckoutJwt ? {
-    ...(outcome.paymentRequiredHeader ? { "PAYMENT-REQUIRED": outcome.paymentRequiredHeader } : {}),
+    ...(outcome.paymentRequiredHeader ? { "PAYMENT-REQUIRED": enrichPaymentRequiredHeader(outcome.paymentRequiredHeader) } : {}),
     ...(outcome.ap2CheckoutJwt ? { "AP2-CHECKOUT-JWT": outcome.ap2CheckoutJwt, "Access-Control-Expose-Headers": "PAYMENT-REQUIRED, AP2-CHECKOUT-JWT" } : {})
   } : undefined;
   const wantsBrowserPaywall = request.headers.get("accept")?.includes("text/html");
   if (outcome.kind === "challenge") {
-    if (wantsBrowserPaywall) return new Response(browserPaywall.generateHtml(outcome.challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
-    return Response.json(outcome.challenge, { status: 402, headers: paymentHeaders });
+    if (wantsBrowserPaywall) return new Response(browserPaywall.generateHtml(challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
+    return Response.json(challenge, { status: 402, headers: paymentHeaders });
   }
   if (outcome.kind === "rejected") {
     console.error("[x402] payment rejected:", outcome.reason);
-    if (wantsBrowserPaywall && outcome.challenge) return new Response(browserPaywall.generateHtml(outcome.challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: outcome.status ?? 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
-    return Response.json({ error: outcome.reason, ...(outcome.challenge as object ?? {}) }, { status: outcome.status ?? 402, headers: paymentHeaders });
+    if (wantsBrowserPaywall && challenge) return new Response(browserPaywall.generateHtml(challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: outcome.status ?? 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
+    return Response.json({ error: outcome.reason, ...(challenge as object ?? {}) }, { status: outcome.status ?? 402, headers: paymentHeaders });
   }
 
   const paymentResponseHeaders = outcome.settlementHeader ? { "PAYMENT-RESPONSE": outcome.settlementHeader } : undefined;
