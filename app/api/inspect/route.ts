@@ -106,7 +106,7 @@ async function fetchPublicPage(startUrl: URL) {
 export async function GET(request: NextRequest) {
   const target = request.nextUrl.searchParams.get("url");
   const url = target ? safeUrl(target) : null;
-  if (request.nextUrl.searchParams.has("url") && !url) return Response.json({ error: "Only safe public HTTP(S) URLs are supported." }, { status: 400 });
+  if (!url) return Response.json({ error: "Only safe public HTTP(S) URLs are supported." }, { status: 400 });
   const paywall = await getPaywall();
   if (!paywall) return Response.json({ error: "Payment service is not configured." }, { status: 503 });
   const paymentHeader = request.headers.get("payment-signature") ?? request.headers.get("x-payment");
@@ -114,7 +114,7 @@ export async function GET(request: NextRequest) {
     path: "/api/inspect",
     method: "GET",
     query: request.nextUrl.searchParams,
-    resource: `${request.nextUrl.origin}${request.nextUrl.pathname}`,
+    resource: request.url,
     paymentHeader
   });
   const challenge = enrichBazaarChallenge(outcome.challenge);
@@ -132,8 +132,6 @@ export async function GET(request: NextRequest) {
     if (wantsBrowserPaywall && challenge) return new Response(browserPaywall.generateHtml(challenge as any, { appName: "Link Lens", currentUrl: request.url, testnet: false }), { status: outcome.status ?? 402, headers: { ...paymentHeaders, "content-type": "text/html; charset=utf-8" } });
     return Response.json({ error: outcome.reason, ...(challenge as object ?? {}) }, { status: outcome.status ?? 402, headers: paymentHeaders });
   }
-
-  if (!url) return Response.json({ error: "Missing url parameter." }, { status: 400 });
 
   const paymentResponseHeaders = outcome.settlementHeader ? { "PAYMENT-RESPONSE": outcome.settlementHeader } : undefined;
   try {
