@@ -8,6 +8,7 @@ const validationResource = process.env.LINKLENS_VALIDATE_URL || `https://${resou
 const showToken = process.argv.includes("--show-token");
 const searchAll = process.argv.includes("--all");
 const validate = process.argv.includes("--validate");
+const search = process.argv.includes("--search");
 
 if (!apiKeyId || !apiKeySecret) {
   console.error("Missing CDP_API_KEY_ID or CDP_API_KEY_SECRET.");
@@ -17,8 +18,14 @@ if (!apiKeyId || !apiKeySecret) {
 const baseUrl = "https://api.cdp.coinbase.com";
 const path = validate
   ? "/platform/v2/x402/validate"
+  : search
+    ? "/platform/v2/x402/discovery/search"
   : payTo && !searchAll ? "/platform/v2/x402/discovery/merchant" : "/platform/v2/x402/discovery/resources";
-const query = validate ? "" : payTo && !searchAll ? `?payTo=${encodeURIComponent(payTo)}&limit=20` : "?limit=100";
+const query = validate
+  ? ""
+  : search
+    ? `?urlSubstring=${encodeURIComponent(resourceHost)}&limit=20`
+    : payTo && !searchAll ? `?payTo=${encodeURIComponent(payTo)}&limit=20` : "?limit=100";
 
 try {
   const accessToken = await generateJwt({
@@ -58,7 +65,7 @@ try {
   console.log(JSON.stringify({
     resourceHost,
     merchant: payTo || null,
-    searchMode: searchAll ? "all-resources" : payTo ? "merchant" : "all-resources",
+    searchMode: search ? "semantic" : searchAll ? "all-resources" : payTo ? "merchant" : "all-resources",
     matches,
     pagination: body.pagination || null,
     accessTokenExpiresInSeconds: 120,
