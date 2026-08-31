@@ -4,6 +4,7 @@ const apiKeyId = process.env.CDP_API_KEY_ID;
 const apiKeySecret = process.env.CDP_API_KEY_SECRET;
 const payTo = process.env.MERCHANT_WALLET;
 const resourceHost = process.env.LINKLENS_BAZAAR_HOST || "linklens-sand.vercel.app";
+const resourceUrl = process.env.LINKLENS_BAZAAR_URL || `https://${resourceHost}/api/inspect`;
 const validationResource = process.env.LINKLENS_VALIDATE_URL || `https://${resourceHost}/api/inspect?url=https://example.com`;
 const showToken = process.argv.includes("--show-token");
 const searchAll = process.argv.includes("--all");
@@ -24,7 +25,7 @@ const path = validate
 const query = validate
   ? ""
   : search
-    ? `?urlSubstring=${encodeURIComponent(resourceHost)}&limit=20`
+    ? `?urlSubstring=${encodeURIComponent(resourceUrl)}&limit=20`
     : payTo && !searchAll ? `?payTo=${encodeURIComponent(payTo)}&limit=20` : "?limit=100";
 
 try {

@@ -3,6 +3,8 @@ import { generateJwt } from "@coinbase/cdp-sdk/auth";
 const apiKeyId = process.env.CDP_API_KEY_ID;
 const apiKeySecret = process.env.CDP_API_KEY_SECRET;
 const resourceHost = process.env.LINKLENS_BAZAAR_HOST || "linklens-sand.vercel.app";
+const resourceUrl =
+  process.env.LINKLENS_BAZAAR_URL || `https://${resourceHost}/api/inspect`;
 const cdpBaseUrl = "https://api.cdp.coinbase.com";
 const agenticUrl = new URL("https://api.agentic.market/v1/search/services");
 
@@ -69,7 +71,7 @@ function printResult(label, passed, details) {
 try {
   const [discovery, agenticResponse] = await Promise.all([
     cdpRequest("/platform/v2/x402/discovery/search", {
-      query: `?urlSubstring=${encodeURIComponent(resourceHost)}&limit=20`,
+      query: `?urlSubstring=${encodeURIComponent(resourceUrl)}&limit=20`,
     }),
     fetch(agenticUrl, { signal: AbortSignal.timeout(20_000) }),
   ]);
@@ -98,6 +100,7 @@ try {
       JSON.stringify(
         {
           resourceHost,
+          resourceUrl,
           cdp: { matches: cdpMatches },
           agentic: { matches: agenticMatches },
         },
