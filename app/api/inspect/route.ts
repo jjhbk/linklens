@@ -131,9 +131,6 @@ async function fetchPublicPage(startUrl: URL) {
   throw new Error("Target exceeded the redirect limit.");
 }
 export async function GET(request: NextRequest) {
-  const target = request.nextUrl.searchParams.get("url");
-  const url = target ? safeUrl(target) : null;
-  if (!url) return Response.json({ error: "Only safe public HTTP(S) URLs are supported." }, { status: 400 });
   const paywall = await getPaywall();
   if (!paywall) return Response.json({ error: "Payment service is not configured." }, { status: 503 });
   const paymentHeader = request.headers.get("payment-signature") ?? request.headers.get("x-payment");
@@ -161,6 +158,14 @@ export async function GET(request: NextRequest) {
   }
 
   const paymentResponseHeaders = outcome.settlementHeader ? { "PAYMENT-RESPONSE": outcome.settlementHeader } : undefined;
+  const target = request.nextUrl.searchParams.get("url");
+  const url = target ? safeUrl(target) : null;
+  if (!url) {
+    return Response.json(
+      { error: "The url query parameter must be a safe public HTTP(S) URL." },
+      { status: 400, headers: paymentResponseHeaders }
+    );
+  }
   try {
     const fetched = await fetchPublicPage(url);
     const response = fetched.response;

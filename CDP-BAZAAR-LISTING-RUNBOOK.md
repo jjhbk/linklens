@@ -95,13 +95,13 @@ CDP normalizes a valid query-based resource into the stable catalog route after 
 
 ### 5. Validate with a complete callable URL
 
-The endpoint requires a `url` query parameter, so validate this:
+The endpoint requires a `url` query parameter to perform an inspection, so validate this complete example when testing request execution:
 
 ```text
 https://linklens-sand.vercel.app/api/inspect?url=https://example.com
 ```
 
-Validating bare `/api/inspect` returns `400` before the paywall and creates a misleading failure.
+The paywall must run before query-parameter validation. Discovery platforms probe the stable bare route, so an unauthenticated request to `/api/inspect` must return `402`, not `400`. After payment succeeds, a request with a missing or unsafe `url` may return `400` with a clear input error.
 
 Run:
 
