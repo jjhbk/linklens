@@ -69,13 +69,40 @@ async function getPaywall() {
   return paywallPromise;
 }
 const browserPaywall = createPaywall().withNetwork(evmPaywall).withConfig({ appName: "Link Lens", testnet: false }).build();
+const bazaarServiceName = "Link Lens URL Inspector";
+const bazaarTags = ["url-intelligence", "metadata", "web", "links", "scraping"];
 function safeUrl(value: string): URL | null {
   try { const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null; if (["localhost", "127.0.0.1", "::1"].includes(url.hostname) || url.hostname.endsWith(".local") || url.hostname.endsWith(".internal")) return null; return url; } catch { return null; }
 }
 function enrichBazaarChallenge(challenge: unknown) {
   if (!challenge || typeof challenge !== "object") return challenge;
-  const value = challenge as { extensions?: { bazaar?: { info?: { input?: { queryParams?: Record<string, unknown> } } } } };
+  const value = challenge as {
+    resource?: Record<string, unknown>;
+    extensions?: {
+      bazaar?: {
+        category?: string;
+        tags?: string[];
+        info?: {
+          name?: string;
+          serviceName?: string;
+          input?: { queryParams?: Record<string, unknown> };
+        };
+      };
+    };
+  };
   const bazaar = value.extensions?.bazaar;
+  if (value.resource) {
+    value.resource.serviceName = bazaarServiceName;
+    value.resource.tags = bazaarTags;
+  }
+  if (bazaar) {
+    bazaar.category = "search";
+    bazaar.tags = bazaarTags;
+    if (bazaar.info) {
+      bazaar.info.name = bazaarServiceName;
+      bazaar.info.serviceName = bazaarServiceName;
+    }
+  }
   if (bazaar?.info?.input) {
     bazaar.info.input.queryParams = { url: "https://example.com" };
   }
